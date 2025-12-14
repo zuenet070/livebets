@@ -78,6 +78,7 @@ def pressure_score(minute, is_draw, favorite_behind,
 
 
 while True:
+    send_message("🧪 DEBUG: bot loop draait")
     try:
         matches = get_live_matches()
 
