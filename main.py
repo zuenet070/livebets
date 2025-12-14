@@ -8,8 +8,11 @@ CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("API_FOOTBALL_KEY")
 
 HEADERS = {
-    "x-apisports-key": API_KEY
+    "x-apisports-key": API_KEY,
+    "Accept": "application/json",
+    "User-Agent": "Mozilla/5.0"
 }
+
 
 ALERTED_FIXTURES = set()
 
