@@ -18,8 +18,7 @@ def send_message(text):
     requests.get(url, params={"chat_id": CHAT_ID, "text": text})
 
 
-
-def matches = get_live_matches()
+matches = get_live_matches()
 
         send_message(f"🧪 LIVE MATCHES GEVONDEN: {len(matches)}")
 
