@@ -17,8 +17,6 @@ def send_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.get(url, params={"chat_id": CHAT_ID, "text": text})
 
-send_message("✅ Bot is succesvol gestart en draait op Railway")
-
 
 
 def get_live_matches():
