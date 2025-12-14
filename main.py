@@ -20,9 +20,13 @@ def send_message(text):
 
 
 def get_live_matches():
-    url = "https://v3.football.api-sports.io/fixtures?live=all"
+    url = (
+        "https://v3.football.api-sports.io/fixtures"
+        "?live=all&include=statistics,events"
+    )
     r = requests.get(url, headers=HEADERS, timeout=10).json()
     return r.get("response", [])
+
 
 
 def get_stat(stats, name):
