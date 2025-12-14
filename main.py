@@ -3,7 +3,6 @@ import os
 import requests
 from datetime import datetime
 
-# ===== ENV VARS =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("API_FOOTBALL_KEY")
@@ -13,16 +12,11 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-# ===== TELEGRAM =====
 def send_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.get(url, params={
-        "chat_id": CHAT_ID,
-        "text": text
-    })
+    requests.get(url, params={"chat_id": CHAT_ID, "text": text})
 
-# ===== API FOOTBALL =====
-def get_live_matches_manual():
+def get_all_today_matches():
     url = "https://v3.football.api-sports.io/fixtures"
     params = {
         "date": datetime.utcnow().strftime("%Y-%m-%d"),
@@ -31,36 +25,31 @@ def get_live_matches_manual():
 
     r = requests.get(url, headers=HEADERS, params=params, timeout=10)
     data = r.json()
+    return data.get("response", [])
 
-    live_matches = []
-
-    for match in data.get("response", []):
-        status = match["fixture"]["status"]["short"]
-        if status in ["1H", "2H"]:
-            live_matches.append(match)
-
-    return live_matches
-
-# ===== START =====
-send_message("🟢 Bot gestart – live check actief")
+send_message("🟢 Bot gestart – brede live scan")
 
 while True:
     try:
-        matches = get_live_matches_manual()
-        send_message(f"🧪 LIVE WEDSTRIJDEN GEVONDEN: {len(matches)}")
+        matches = get_all_today_matches()
 
-        for match in matches:
+        live_matches = []
+        for m in matches:
+            minute = m["fixture"]["status"]["elapsed"]
+            if minute is not None and 1 <= minute <= 120:
+                live_matches.append(m)
+
+        send_message(f"🧪 LIVE MATCHES (BROAD): {len(live_matches)}")
+
+        for match in live_matches[:3]:  # max 3 berichten
             home = match["teams"]["home"]["name"]
             away = match["teams"]["away"]["name"]
             minute = match["fixture"]["status"]["elapsed"]
-            score_home = match["goals"]["home"]
-            score_away = match["goals"]["away"]
+            gh = match["goals"]["home"]
+            ga = match["goals"]["away"]
 
             send_message(
-                f"⚽ LIVE WEDSTRIJD\n"
-                f"{home} vs {away}\n"
-                f"Minuut: {minute}'\n"
-                f"Stand: {score_home}-{score_away}"
+                f"⚽ LIVE\n{home} vs {away}\nMinuut: {minute}'\nStand: {gh}-{ga}"
             )
 
         time.sleep(60)
@@ -68,3 +57,4 @@ while True:
     except Exception as e:
         send_message(f"❌ ERROR: {e}")
         time.sleep(60)
+
