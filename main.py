@@ -25,16 +25,15 @@ def send_message(text):
     })
 
 # ===== API FOOTBALL =====
-def get_live_matches():
+def get_test_fixtures():
     url = "https://v3.football.api-sports.io/fixtures"
     params = {
-        "next": 5
+        "date": "2025-12-15"  # morgen
     }
-
     r = requests.get(url, headers=HEADERS, params=params, timeout=10)
     data = r.json()
 
-    send_message(f"🧪 UPCOMING MATCHES: {data.get('results')}")
+    send_message(f"🧪 FIXTURES MORGEN: {data.get('results')}")
     return data.get("response", [])
 
 
