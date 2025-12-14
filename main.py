@@ -19,14 +19,23 @@ def send_message(text):
 
 
 
-def get_live_matches():
-    url = (
-        "https://v3.football.api-sports.io/fixtures"
-        "?live=all&include=statistics,events"
-    )
-    r = requests.get(url, headers=HEADERS, timeout=10).json()
-    return r.get("response", [])
+def matches = get_live_matches()
 
+        send_message(f"🧪 LIVE MATCHES GEVONDEN: {len(matches)}")
+
+        for match in matches:
+            home = match["teams"]["home"]["name"]
+            away = match["teams"]["away"]["name"]
+            minute = match["fixture"]["status"]["elapsed"]
+
+            send_message(f"⚽ LIVE: {home} vs {away} ({minute}')")
+            break  # slechts 1 match sturen
+
+        time.sleep(60)
+
+    except Exception as e:
+        send_message(f"❌ ERROR: {e}")
+        time.sleep(60)
 
 
 def get_stat(stats, name):
