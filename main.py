@@ -28,15 +28,13 @@ def send_message(text):
 def get_live_matches():
     url = "https://v3.football.api-sports.io/fixtures"
     params = {
-        "live": "all",
-        "league": 39  # Premier League
+        "next": 5
     }
 
     r = requests.get(url, headers=HEADERS, params=params, timeout=10)
-    send_message(f"🧪 STATUS CODE: {r.status_code}")
     data = r.json()
-    send_message(f"🧪 API RESPONSE KEYS: {list(data.keys())}")
 
+    send_message(f"🧪 UPCOMING MATCHES: {data.get('results')}")
     return data.get("response", [])
 
 
