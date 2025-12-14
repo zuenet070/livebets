@@ -130,7 +130,7 @@ while True:
                 red_card_recent=red_card_recent
             )
 
-            if score >= 7:
+            if score >= 1:
                 send_message(
                     f"⚠️ NEXT GOAL ALERT\n\n"
                     f"{home} vs {away}\n"
