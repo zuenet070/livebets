@@ -26,9 +26,19 @@ def send_message(text):
 
 # ===== API FOOTBALL =====
 def get_live_matches():
-    url = "https://v3.football.api-sports.io/fixtures?next=5"
-    r = requests.get(url, headers=HEADERS, timeout=10)
-    return r.json().get("response", [])
+    url = "https://v3.football.api-sports.io/fixtures"
+    params = {
+        "live": "all",
+        "league": 39  # Premier League
+    }
+
+    r = requests.get(url, headers=HEADERS, params=params, timeout=10)
+    send_message(f"🧪 STATUS CODE: {r.status_code}")
+    data = r.json()
+    send_message(f"🧪 API RESPONSE KEYS: {list(data.keys())}")
+
+    return data.get("response", [])
+
 
 
 
