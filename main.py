@@ -16,24 +16,29 @@ def send_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     requests.get(url, params={"chat_id": CHAT_ID, "text": text})
 
-def get_all_today_matches():
+def get_today_fixtures():
     url = "https://v3.football.api-sports.io/fixtures"
     params = {
         "date": datetime.utcnow().strftime("%Y-%m-%d"),
         "timezone": "Europe/Amsterdam"
     }
-
     r = requests.get(url, headers=HEADERS, params=params, timeout=10)
-    data = r.json()
-    return data.get("response", [])
+    return r.json().get("response", [])
 
-send_message("🟢 Bot gestart – brede live scan")
+send_message("🟢 Bot gestart – LIVE scan actief")
 
 while True:
     try:
-        matches = get_all_today_matches(
+        fixtures = get_today_fixtures()
 
-        for match in live_matches[:3]:  # max 3 berichten
+        live_matches = [
+            m for m in fixtures
+            if m["fixture"]["status"]["short"] == "LIVE"
+        ]
+
+        send_message(f"📡 LIVE WEDSTRIJDEN: {len(live_matches)}")
+
+        for match in live_matches[:3]:
             home = match["teams"]["home"]["name"]
             away = match["teams"]["away"]["name"]
             minute = match["fixture"]["status"]["elapsed"]
@@ -49,4 +54,3 @@ while True:
     except Exception as e:
         send_message(f"❌ ERROR: {e}")
         time.sleep(60)
-
