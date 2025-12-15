@@ -47,4 +47,4 @@ while True:
 
     except Exception as e:
         send_message(f"❌ ERROR: {e}")
-        time.sleep(60)
+        time.sleep(600)
