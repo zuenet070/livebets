@@ -1,9 +1,7 @@
 import time
 import os
 import requests
-from datetime import datetime
 
-# ===== ENV =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("API_FOOTBALL_KEY")
@@ -13,55 +11,36 @@ HEADERS = {
     "Accept": "application/json"
 }
 
-LIVE_STATUSES = {"LIVE", "1H", "2H", "HT", "ET"}
-
-# ===== TELEGRAM =====
 def send_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    requests.get(url, params={
-        "chat_id": CHAT_ID,
-        "text": text
-    })
+    requests.get(url, params={"chat_id": CHAT_ID, "text": text})
 
-# ===== API =====
-def get_today_fixtures():
+def get_live_matches():
     url = "https://v3.football.api-sports.io/fixtures"
-    params = {
-        "date": datetime.utcnow().strftime("%Y-%m-%d"),
-        "timezone": "Europe/Amsterdam"
-    }
+    params = {"live": "all"}
     r = requests.get(url, headers=HEADERS, params=params, timeout=10)
     data = r.json()
+
+    # debug info
+    send_message(f"🧪 API results: {data.get('results', 'no results key')}")
     return data.get("response", [])
 
-# ===== START =====
-send_message("🟢 Bot gestart – LIVE detectie test")
+send_message("🟢 Bot gestart – live check actief")
 
 while True:
     try:
-        fixtures = get_today_fixtures()
+        matches = get_live_matches()
+        send_message(f"⚽ LIVE WEDSTRIJDEN GEVONDEN: {len(matches)}")
 
-        live_matches = [
-            f for f in fixtures
-            if f["fixture"]["status"]["short"] in LIVE_STATUSES
-        ]
-
-        send_message(f"📡 LIVE MATCHES GEVONDEN: {len(live_matches)}")
-
-        for match in live_matches[:3]:
-            home = match["teams"]["home"]["name"]
-            away = match["teams"]["away"]["name"]
-            minute = match["fixture"]["status"]["elapsed"]
-            status = match["fixture"]["status"]["short"]
-            gh = match["goals"]["home"]
-            ga = match["goals"]["away"]
+        for m in matches[:3]:
+            home = m["teams"]["home"]["name"]
+            away = m["teams"]["away"]["name"]
+            minute = m["fixture"]["status"]["elapsed"]
+            gh = m["goals"]["home"]
+            ga = m["goals"]["away"]
 
             send_message(
-                f"⚽ LIVE WEDSTRIJD\n"
-                f"{home} vs {away}\n"
-                f"Status: {status}\n"
-                f"Minuut: {minute}'\n"
-                f"Stand: {gh}-{ga}"
+                f"🔴 LIVE\n{home} vs {away}\nMinuut: {minute}'\nStand: {gh}-{ga}"
             )
 
         time.sleep(60)
