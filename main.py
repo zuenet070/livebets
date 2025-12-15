@@ -43,7 +43,7 @@ while True:
                 f"🔴 LIVE\n{home} vs {away}\nMinuut: {minute}'\nStand: {gh}-{ga}"
             )
 
-        time.sleep(60)
+        time.sleep(500)
 
     except Exception as e:
         send_message(f"❌ ERROR: {e}")
