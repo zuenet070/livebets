@@ -1,6 +1,6 @@
 import requests
 import os
-from datetime import datetime
+import time
 
 API_KEY = os.getenv("API_FOOTBALL_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -16,24 +16,24 @@ def send(msg):
         params={"chat_id": CHAT_ID, "text": msg}
     )
 
-send("🧪 TEST START – vandaag wedstrijden ophalen")
+send("🟢 TEST START – LIVE endpoint")
 
-today = datetime.utcnow().strftime("%Y-%m-%d")
-
-r = requests.get(
-    "https://v3.football.api-sports.io/fixtures",
-    headers=HEADERS,
-    params={"date": today}
-)
-
-data = r.json()
-
-send(f"📊 RESULTAAT API: {data['results']} wedstrijden gevonden")
-
-if data["results"] > 0:
-    match = data["response"][0]
-    send(
-        f"⚽ VOORBEELD:\n"
-        f"{match['teams']['home']['name']} vs {match['teams']['away']['name']}"
+while True:
+    r = requests.get(
+        "https://v3.football.api-sports.io/fixtures?live=all",
+        headers=HEADERS
     )
 
+    data = r.json()
+
+    send(f"📊 API results: {data.get('results')}")
+
+    if data.get("results", 0) > 0:
+        match = data["response"][0]
+        send(
+            f"⚽ LIVE GEVONDEN:\n"
+            f"{match['teams']['home']['name']} vs {match['teams']['away']['name']}\n"
+            f"Minuut: {match['fixture']['status']['elapsed']}"
+        )
+
+    time.sleep(120)
