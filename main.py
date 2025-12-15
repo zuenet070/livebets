@@ -31,15 +31,7 @@ send_message("🟢 Bot gestart – brede live scan")
 
 while True:
     try:
-        matches = get_all_today_matches()
-
-        live_matches = []
-        for m in matches:
-            minute = m["fixture"]["status"]["elapsed"]
-            if minute is not None and 1 <= minute <= 120:
-                live_matches.append(m)
-
-        send_message(f"🧪 LIVE MATCHES (BROAD): {len(live_matches)}")
+        matches = get_all_today_matches(
 
         for match in live_matches[:3]:  # max 3 berichten
             home = match["teams"]["home"]["name"]
