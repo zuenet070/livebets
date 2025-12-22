@@ -1,6 +1,7 @@
 import time
 import os
 import requests
+from datetime import date
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
@@ -10,7 +11,9 @@ HEADERS = {
     "x-apisports-key": API_KEY
 }
 
-ALERTED = set()
+ALERTED_MATCHES = set()
+DAILY_ALERTS = 0
+TODAY = date.today()
 
 def send_message(text):
     requests.get(
@@ -19,42 +22,52 @@ def send_message(text):
     )
 
 def get_live_matches():
-    url = "https://v3.football.api-sports.io/fixtures"
-    params = {"live": "all"}
-    r = requests.get(url, headers=HEADERS, params=params, timeout=10)
+    r = requests.get(
+        "https://v3.football.api-sports.io/fixtures",
+        headers=HEADERS,
+        params={"live": "all"},
+        timeout=25
+    )
     return r.json().get("response", [])
 
-def stat(team_stats, name):
-    for s in team_stats:
+def stat(stats, name):
+    for s in stats:
         if s["type"] == name:
             v = s["value"]
             if v is None:
                 return 0
             if isinstance(v, str):
                 return int(v.replace("%", ""))
-            return int(v)
+            return float(v)
     return 0
 
-send_message("🟢 Bot gestart – next goal alerts actief")
+send_message("🟢 VALUE-MODUS actief — max 5 bets per dag")
 
 while True:
     try:
+        if date.today() != TODAY:
+            TODAY = date.today()
+            DAILY_ALERTS = 0
+            ALERTED_MATCHES.clear()
+
+        if DAILY_ALERTS >= 5:
+            time.sleep(300)
+            continue
+
         matches = get_live_matches()
 
         for match in matches:
             fid = match["fixture"]["id"]
-            if fid in ALERTED:
+            if fid in ALERTED_MATCHES:
                 continue
 
             minute = match["fixture"]["status"]["elapsed"]
-            if not minute or minute < 30 or minute > 75:
+            if not minute or minute < 25 or minute > 80:
                 continue
 
             gh = match["goals"]["home"]
             ga = match["goals"]["away"]
-            diff = abs(gh - ga)
-
-            if diff > 1:
+            if abs(gh - ga) > 1:
                 continue
 
             stats = match.get("statistics")
@@ -72,13 +85,13 @@ while True:
             ap = stat(away_stats, "Ball Possession")
 
             pressure_home = sum([
-                hs >= 3,
-                hc >= 3,
+                hs >= 2,
+                hc >= 2,
                 hp >= 60
             ])
             pressure_away = sum([
-                as_ >= 3,
-                ac >= 3,
+                as_ >= 2,
+                ac >= 2,
                 ap >= 60
             ])
 
@@ -87,11 +100,10 @@ while True:
 
             home = match["teams"]["home"]["name"]
             away = match["teams"]["away"]["name"]
-
             predicted = home if pressure_home > pressure_away else away
 
             send_message(
-                f"⚠️ NEXT GOAL ALERT\n\n"
+                f"🎯 VALUE BET – NEXT GOAL\n\n"
                 f"{home} vs {away}\n"
                 f"Minuut: {minute}'\n"
                 f"Stand: {gh}-{ga}\n\n"
@@ -101,16 +113,12 @@ while True:
                 f"➡️ Verwachte volgende goal: {predicted}"
             )
 
-            ALERTED.add(fid)
+            ALERTED_MATCHES.add(fid)
+            DAILY_ALERTS += 1
             break
 
+        time.sleep(90)
+
+    except Exception:
         time.sleep(60)
 
-    except Exception as e:
-        send_message(f"❌ ERROR: {e}")
-        time.sleep(60)
-
-
-    except Exception as e:
-        send_message(f"❌ ERROR: {e}")
-        time.sleep(60)
