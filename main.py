@@ -4,13 +4,12 @@ import requests
 from datetime import date
 
 # =========================
-# JOUW ENV VARS (zoals in je screenshot)
+# ENV VARS (zoals in jouw hosting)
 # =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("API_FOOTBALL_KEY")
 
-# Als er iets mist → duidelijke melding en stoppen
 if not BOT_TOKEN or not CHAT_ID or not API_KEY:
     print("❌ ERROR: Missing env vars. Check BOT_TOKEN, CHAT_ID, API_FOOTBALL_KEY")
     exit()
@@ -18,11 +17,18 @@ if not BOT_TOKEN or not CHAT_ID or not API_KEY:
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
 
+# =========================
+# LIMITS
+# =========================
 ALERTED_MATCHES = set()
 DAILY_ALERTS = 0
 TODAY = date.today()
 DAILY_MAX_ALERTS = 5
 
+
+# =========================
+# TELEGRAM
+# =========================
 def send_message(text):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     params = {"chat_id": CHAT_ID, "text": text}
@@ -31,19 +37,29 @@ def send_message(text):
     except:
         pass
 
+
+# =========================
+# API HELPERS
+# =========================
 def api_get(path, params=None):
     r = requests.get(f"{BASE_URL}{path}", headers=HEADERS, params=params, timeout=25)
     r.raise_for_status()
     return r.json()
 
+
 def get_live_matches():
     data = api_get("/fixtures", params={"live": "all"})
     return data.get("response", [])
+
 
 def get_match_statistics(fixture_id):
     data = api_get("/fixtures/statistics", params={"fixture": fixture_id})
     return data.get("response", [])
 
+
+# =========================
+# STATS
+# =========================
 def safe_int(v):
     if v is None:
         return 0
@@ -54,19 +70,27 @@ def safe_int(v):
     except:
         return 0
 
+
 def stat(team_stats_list, name):
     for s in team_stats_list:
         if s.get("type") == name:
             return safe_int(s.get("value"))
     return 0
 
+
+# =========================
+# START
+# =========================
 send_message("🟢 Bot gestart – NEXT GOAL alerts actief")
 send_message("🟢 VALUE-MODUS actief — max 5 bets per dag")
 
+
+# =========================
+# MAIN LOOP
+# =========================
 while True:
     try:
         # reset elke dag
-        global TODAY, DAILY_ALERTS
         if date.today() != TODAY:
             TODAY = date.today()
             DAILY_ALERTS = 0
@@ -102,7 +126,7 @@ while True:
             if abs(gh - ga) > 1:
                 continue
 
-            # stats ophalen (dit zit NIET in live fixtures zelf)
+            # stats ophalen
             stats_response = get_match_statistics(fid)
             if not stats_response or len(stats_response) != 2:
                 continue
@@ -119,10 +143,11 @@ while True:
             hpos = stat(home_stats, "Ball Possession")
             apos = stat(away_stats, "Ball Possession")
 
-            # pressure score
+            # pressure score (simpel)
             pressure_home = sum([hsot >= 3, hcorn >= 3, hsot >= 2, hcorn >= 2, hpos >= 60])
             pressure_away = sum([asot >= 3, acorn >= 3, asot >= 2, acorn >= 2, apos >= 60])
 
+            # alleen alert als er verschil is
             if pressure_home == pressure_away:
                 continue
 
@@ -153,3 +178,5 @@ while True:
     except Exception as e:
         send_message(f"❌ ERROR: {e}")
         time.sleep(60)
+
+
