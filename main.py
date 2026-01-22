@@ -24,20 +24,20 @@ TODAY = date.today()
 DAILY_ALERTS = 0
 DAILY_MAX_ALERTS = 9999  # praktisch onbeperkt
 
-MIN_MINUTE = 18
+MIN_MINUTE = 15
 MAX_MINUTE = 88
 
 # Alert thresholds
-MIN_SCORE = 12          # normale alert
+MIN_SCORE = 10          # normale alert
 EXTREME_SCORE = 18      # extreme alert
 
 # Weights (Shots on Target telt zwaar)
-W_SOT = 6
+W_SOT = 3
 W_SHOTS = 1
 W_CORNERS = 1
 W_POSSESSION = 0.07
 W_BIGCHANCES = 3
-RED_CARD_BONUS = 6
+RED_CARD_BONUS = 4
 
 # Kwaliteit filters
 MIN_DOMINANT_SOT = 1
