@@ -1,7 +1,8 @@
 import time
 import os
 import requests
-from datetime import date
+import csv
+from datetime import date, datetime
 
 # =========================
 # ENV VARS
@@ -18,38 +19,45 @@ BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
 
 # =========================
-# SETTINGS
+# PREMIUM SETTINGS
 # =========================
 TODAY = date.today()
 DAILY_ALERTS = 0
-DAILY_MAX_ALERTS = 9999  # praktisch onbeperkt
+DAILY_MAX_ALERTS = 9999
 
-MIN_MINUTE = 15
+MIN_MINUTE = 18
 MAX_MINUTE = 88
 
-# Alert thresholds
-MIN_SCORE = 10          # normale alert
-EXTREME_SCORE = 18      # extreme alert
+# ✅ Alerts (premium strenger)
+MIN_SCORE = 13
+EXTREME_SCORE = 20
 
-# Weights (Shots on Target telt zwaar)
-W_SOT = 3
+# ✅ Nieuw: Dominantie GAP filter
+# (hoe hoger, hoe minder alerts maar betere kwaliteit)
+MIN_GAP = 18.0
+
+# ✅ Nieuw: Tegenstander mag niet te veel threat hebben
+MAX_OPP_SOT = 1          # tegenstander max 1 SOT in de helft
+MAX_OPP_SHOTS = 6        # of max 6 shots in de helft
+
+# ✅ Weights (SOT super belangrijk)
+W_SOT = 6
 W_SHOTS = 1
 W_CORNERS = 1
 W_POSSESSION = 0.07
 W_BIGCHANCES = 3
-RED_CARD_BONUS = 4
+RED_CARD_BONUS = 6
 
-# Kwaliteit filters
-MIN_DOMINANT_SOT = 1
-MIN_DOMINANT_SHOTS = 5
+# Kwaliteit filter dominant team
+MIN_DOMINANT_SOT = 2
+MIN_DOMINANT_SHOTS = 6
 
 # Score regels
-MAX_BEHIND_GOALS = 2         # dominant team mag max 2 goals achter staan
-GOAL_COOLDOWN_SECONDS = 90   # na goal even geen alerts
+MAX_BEHIND_GOALS = 2
+GOAL_COOLDOWN_SECONDS = 90
 
-# ODDS settings
-# ✅ Altijd sturen, ook zonder odds
-REQUIRE_ODDS = False
+# Odds settings
+REQUIRE_ODDS = False  # altijd sturen, odds is nice-to-have
 
 # =========================
 # Blacklist rommel
@@ -64,11 +72,14 @@ EXCLUDE_KEYWORDS = [
 ]
 
 # =========================
-# State / memory
+# State
 # =========================
 ALERT_STATE = {}         # fid -> {"normal": bool, "extreme": bool}
 HALF_TIME_SNAPSHOT = {}  # fid -> snapshot dict
 SCORE_STATE = {}         # fid -> {"score": (gh,ga), "changed_at": epoch}
+
+LOG_FILE = "alerts_log.csv"
+
 
 # =========================
 # HELPERS
@@ -81,18 +92,22 @@ def send_message(text):
     except:
         pass
 
+
 def api_get(path, params=None):
     r = requests.get(f"{BASE_URL}{path}", headers=HEADERS, params=params, timeout=25)
     r.raise_for_status()
     return r.json()
 
+
 def get_live_matches():
     data = api_get("/fixtures", params={"live": "all"})
     return data.get("response", [])
 
+
 def get_match_statistics(fixture_id):
     data = api_get("/fixtures/statistics", params={"fixture": fixture_id})
     return data.get("response", [])
+
 
 def safe_int(v):
     if v is None:
@@ -104,11 +119,13 @@ def safe_int(v):
     except:
         return 0
 
+
 def stat(team_stats_list, name):
     for s in team_stats_list:
         if s.get("type") == name:
             return safe_int(s.get("value"))
     return 0
+
 
 def get_big_chances(team_stats_list):
     for key in ["Big Chances", "Big chances", "Big Chances Created", "Big chances created"]:
@@ -117,8 +134,10 @@ def get_big_chances(team_stats_list):
             return v
     return 0
 
+
 def clamp_nonnegative(x):
     return x if x > 0 else 0
+
 
 def is_excluded_match(league_name, home_name, away_name):
     text = f"{league_name} {home_name} {away_name}".lower()
@@ -127,26 +146,22 @@ def is_excluded_match(league_name, home_name, away_name):
             return True
     return False
 
+
 def cleanup_finished(fid):
     ALERT_STATE.pop(fid, None)
     HALF_TIME_SNAPSHOT.pop(fid, None)
     SCORE_STATE.pop(fid, None)
 
+
 # =========================
-# ODDS (API-Football)
+# ODDS
 # =========================
 def get_live_odds(fixture_id):
-    """
-    Probeert odds op te halen.
-    Welke endpoint werkt hangt af van jouw plan.
-    We proberen meerdere varianten zonder crashen.
-    """
     endpoints = [
         ("/odds/live", {"fixture": fixture_id}),
         ("/odds", {"fixture": fixture_id, "live": "all"}),
         ("/odds", {"fixture": fixture_id}),
     ]
-
     for path, params in endpoints:
         try:
             data = api_get(path, params=params)
@@ -155,14 +170,10 @@ def get_live_odds(fixture_id):
                 return resp
         except:
             continue
-
     return None
 
+
 def find_next_goal_odds(odds_response, predicted_side, home_name, away_name):
-    """
-    Zoekt Next Goal market en pakt odds voor HOME/AWAY.
-    predicted_side = "HOME" of "AWAY"
-    """
     if not odds_response:
         return None
 
@@ -195,20 +206,76 @@ def find_next_goal_odds(odds_response, predicted_side, home_name, away_name):
                             return float(v.get("odd"))
                         except:
                             return None
-
     return None
+
+
+# =========================
+# CONFIDENCE SCORE
+# =========================
+def confidence_score(dominant_score, gap, sot_diff, red_adv, big_diff):
+    """
+    Output: 0-100
+    """
+    score = 0
+    score += max(0, (dominant_score - MIN_SCORE) * 6)   # basis vanuit dominantie
+    score += min(30, gap * 1.0)                         # gap = mega belangrijk
+    score += min(25, sot_diff * 10)                     # SOT verschil
+    score += min(10, red_adv * 10)                      # rood voordeel
+    score += min(10, big_diff * 6)                      # big chances diff
+
+    if score > 100:
+        score = 100
+    if score < 0:
+        score = 0
+    return int(score)
+
+
+# =========================
+# LOGGING
+# =========================
+def ensure_log_header():
+    try:
+        with open(LOG_FILE, "r", newline="", encoding="utf-8") as f:
+            return
+    except FileNotFoundError:
+        with open(LOG_FILE, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([
+                "timestamp", "fixture_id", "league", "home", "away",
+                "minute", "score", "pick", "dominant_score", "gap", "confidence", "odds"
+            ])
+
+def log_alert(fid, league, home, away, minute, gh, ga, pick, dom_score, gap, conf, odds):
+    ensure_log_header()
+    with open(LOG_FILE, "a", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow([
+            datetime.now().isoformat(timespec="seconds"),
+            fid,
+            league,
+            home,
+            away,
+            minute,
+            f"{gh}-{ga}",
+            pick,
+            round(dom_score, 2),
+            round(gap, 2),
+            conf,
+            odds if odds is not None else ""
+        ])
+
 
 # =========================
 # START
 # =========================
-send_message("🟢 Bot gestart – ALL LEAGUES + BLACKLIST + ODDS SLOT + EXTREME ✅")
+send_message("🟢 Premium Bot gestart – GAP + CONFIDENCE + LOGGING ✅")
+
 
 # =========================
 # MAIN LOOP
 # =========================
 while True:
     try:
-        # daily reset
         if date.today() != TODAY:
             TODAY = date.today()
             DAILY_ALERTS = 0
@@ -230,8 +297,6 @@ while True:
                 continue
 
             status_short = fixture.get("status", {}).get("short", "")
-
-            # finished / cancelled -> cleanup
             if status_short in ("FT", "AET", "PEN", "CANC", "PST", "ABD", "AWD", "WO"):
                 cleanup_finished(fid)
                 continue
@@ -243,7 +308,6 @@ while True:
             league_name = league.get("name", "Unknown League")
             league_country = league.get("country", "")
 
-            # blacklist filter
             if is_excluded_match(league_name, home, away):
                 continue
 
@@ -255,11 +319,10 @@ while True:
             gh = goals.get("home", 0)
             ga = goals.get("away", 0)
 
-            # te extreme scoreline skip
             if abs(gh - ga) > MAX_BEHIND_GOALS:
                 continue
 
-            # cooldown na score change
+            # cooldown na goal
             now = time.time()
             current_score = (gh, ga)
 
@@ -273,11 +336,9 @@ while True:
             if now - SCORE_STATE[fid]["changed_at"] < GOAL_COOLDOWN_SECONDS:
                 continue
 
-            # init alert state per match
             if fid not in ALERT_STATE:
                 ALERT_STATE[fid] = {"normal": False, "extreme": False}
 
-            # stats ophalen
             stats_response = get_match_statistics(fid)
             if not stats_response or len(stats_response) != 2:
                 continue
@@ -285,7 +346,7 @@ while True:
             home_stats = stats_response[0].get("statistics", [])
             away_stats = stats_response[1].get("statistics", [])
 
-            # cumulatieve stats
+            # totals
             hsot_total = stat(home_stats, "Shots on Goal")
             asot_total = stat(away_stats, "Shots on Goal")
 
@@ -304,14 +365,14 @@ while True:
             hred_total = stat(home_stats, "Red Cards")
             ared_total = stat(away_stats, "Red Cards")
 
-            # halftime snapshot opslaan
+            # halftime snapshot
             if (status_short == "HT" or minute >= 45) and fid not in HALF_TIME_SNAPSHOT:
                 HALF_TIME_SNAPSHOT[fid] = {
                     "home": {"sot": hsot_total, "shots": hshots_total, "corn": hcorn_total, "big": hbig_total},
                     "away": {"sot": asot_total, "shots": ashots_total, "corn": acorn_total, "big": abig_total},
                 }
 
-            # per helft stats
+            # per half
             in_second_half = minute > 45
             use_half_stats = in_second_half and fid in HALF_TIME_SNAPSHOT
 
@@ -336,13 +397,13 @@ while True:
                 hbig, abig = hbig_total, abig_total
                 half_text = "1e helft" if minute <= 45 else "totaal"
 
-            # rode kaart bonus
-            red_adv_home = ared_total - hred_total
-            red_adv_away = hred_total - ared_total
+            # red card bonus
+            red_adv_home = ared_total - hred_total  # >0 = home man meer
+            red_adv_away = hred_total - ared_total  # >0 = away man meer
             red_bonus_home = max(0, red_adv_home) * RED_CARD_BONUS
             red_bonus_away = max(0, red_adv_away) * RED_CARD_BONUS
 
-            # dominantie score
+            # dominance score
             score_home = (
                 (hsot - asot) * W_SOT +
                 (hshots - ashots) * W_SHOTS +
@@ -361,20 +422,35 @@ while True:
                 red_bonus_away
             )
 
+            gap = abs(score_home - score_away)
+
+            # ✅ PREMIUM: skip als gap niet groot genoeg is
+            if gap < MIN_GAP:
+                continue
+
             # dominant side
             if score_home > score_away:
                 dominant_side = "HOME"
                 dominant_score = score_home
                 dominant_sot = hsot
                 dominant_shots = hshots
+                opp_sot = asot
+                opp_shots = ashots
+                sot_diff = hsot - asot
+                red_adv = max(0, red_adv_home)
+                big_diff = hbig - abig
             else:
                 dominant_side = "AWAY"
                 dominant_score = score_away
                 dominant_sot = asot
                 dominant_shots = ashots
+                opp_sot = hsot
+                opp_shots = hshots
+                sot_diff = asot - hsot
+                red_adv = max(0, red_adv_away)
+                big_diff = abig - hbig
 
-            # ✅ jouw regels:
-            # nooit alert als dominant team VOOR staat
+            # ✅ jouw regels: NOOIT alert als dominant team voor staat
             if dominant_side == "HOME" and gh > ga:
                 continue
             if dominant_side == "AWAY" and ga > gh:
@@ -386,22 +462,26 @@ while True:
             if dominant_side == "AWAY" and (gh - ga) > MAX_BEHIND_GOALS:
                 continue
 
-            # kwaliteit check
+            # dominant team moet dreiging hebben
             if dominant_sot < MIN_DOMINANT_SOT and dominant_shots < MIN_DOMINANT_SHOTS:
                 continue
 
-            # =========================
-            # ODDS CHECK (nice-to-have)
-            # =========================
+            # ✅ opponent threat filter (tegenstander mag niet ook gevaarlijk zijn)
+            if opp_sot > MAX_OPP_SOT and opp_shots > MAX_OPP_SHOTS:
+                continue
+
+            # threshold
+            if dominant_score < MIN_SCORE:
+                continue
+
+            # odds
             picked_odds = None
             odds_response = get_live_odds(fid)
             picked_odds = find_next_goal_odds(odds_response, dominant_side, home, away)
 
-            # ✅ NOOIT skippen door odds
             if picked_odds is None and REQUIRE_ODDS:
                 continue
 
-            # SLOT als odds ontbreken
             odds_line = (
                 f"\n💰 Next Goal Odds: {picked_odds} ✅"
                 if picked_odds is not None
@@ -410,20 +490,28 @@ while True:
 
             predicted = home if dominant_side == "HOME" else away
 
-            # rode kaart tekst
+            # confidence
+            conf = confidence_score(
+                dominant_score=dominant_score,
+                gap=gap,
+                sot_diff=sot_diff,
+                red_adv=red_adv,
+                big_diff=big_diff
+            )
+
             red_txt = ""
             if hred_total or ared_total:
                 red_txt = f"\n🟥 Red Cards: {hred_total} - {ared_total}"
 
-            # =========================
-            # EXTREME ALERT
-            # =========================
+            # EXTREME alert
             if dominant_score >= EXTREME_SCORE and not ALERT_STATE[fid]["extreme"]:
                 send_message(
                     f"🔥🔥 EXTREME NEXT GOAL ALERT ({half_text})\n\n"
                     f"🏆 {league_name} ({league_country})\n"
                     f"{home} vs {away}\n"
                     f"Minuut: {minute}' | Stand: {gh}-{ga}\n\n"
+                    f"✅ Confidence: {conf}/100\n"
+                    f"📏 GAP: {round(gap,1)}\n\n"
                     f"📊 Stats ({half_text}):\n"
                     f"SOT: {hsot} - {asot}\n"
                     f"Shots: {hshots} - {ashots}\n"
@@ -435,19 +523,33 @@ while True:
                     f"🚀 Dominantie score: {round(score_home,1)} - {round(score_away,1)}\n"
                     f"➡️ EXTREME pick: {predicted}"
                 )
+
+                log_alert(
+                    fid=fid,
+                    league=f"{league_name} ({league_country})",
+                    home=home, away=away,
+                    minute=minute,
+                    gh=gh, ga=ga,
+                    pick=predicted,
+                    dom_score=dominant_score,
+                    gap=gap,
+                    conf=conf,
+                    odds=picked_odds
+                )
+
                 ALERT_STATE[fid]["extreme"] = True
                 DAILY_ALERTS += 1
                 break
 
-            # =========================
-            # NORMAL ALERT
-            # =========================
+            # NORMAL alert
             if dominant_score >= MIN_SCORE and not ALERT_STATE[fid]["normal"]:
                 send_message(
                     f"⚠️ NEXT GOAL ALERT ({half_text})\n\n"
                     f"🏆 {league_name} ({league_country})\n"
                     f"{home} vs {away}\n"
                     f"Minuut: {minute}' | Stand: {gh}-{ga}\n\n"
+                    f"✅ Confidence: {conf}/100\n"
+                    f"📏 GAP: {round(gap,1)}\n\n"
                     f"📊 Stats ({half_text}):\n"
                     f"SOT: {hsot} - {asot}\n"
                     f"Shots: {hshots} - {ashots}\n"
@@ -459,6 +561,20 @@ while True:
                     f"🔥 Dominantie score: {round(score_home,1)} - {round(score_away,1)}\n"
                     f"➡️ Verwachte volgende goal: {predicted}"
                 )
+
+                log_alert(
+                    fid=fid,
+                    league=f"{league_name} ({league_country})",
+                    home=home, away=away,
+                    minute=minute,
+                    gh=gh, ga=ga,
+                    pick=predicted,
+                    dom_score=dominant_score,
+                    gap=gap,
+                    conf=conf,
+                    odds=picked_odds
+                )
+
                 ALERT_STATE[fid]["normal"] = True
                 DAILY_ALERTS += 1
                 break
@@ -468,3 +584,4 @@ while True:
     except Exception as e:
         send_message(f"❌ ERROR: {e}")
         time.sleep(60)
+
