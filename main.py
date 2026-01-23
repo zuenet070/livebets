@@ -529,6 +529,12 @@ def resolve_pending_not_in_live():
 # =========================
 send_message("🟢 Bot gestart – NORMAL + PREMIUM + EXTREME + HIT/MISS + PRO DAGRAPPORT ✅")
 
+# ✅ Handmatig rapport triggeren via Railway Variable
+if os.getenv("REPORT_NOW") == "1":
+    send_daily_report(TODAY)  # rapport van vandaag
+    send_message("✅ Rapport handmatig verstuurd (REPORT_NOW=1).")
+
+
 
 # =========================
 # MAIN LOOP
