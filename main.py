@@ -19,9 +19,18 @@ BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
 
 # =========================
+# LOG DIRECTORY (Railway Volume)
+# =========================
+# ✅ Als je Railway Volume mount op /app/data -> laat dit zo.
+# ❌ Als je GEEN volume hebt, zet naar "." (punt)
+LOG_DIR = os.getenv("LOG_DIR", ".")  # bv: "/app/data" of "."
+
+ALERTS_LOG = os.path.join(LOG_DIR, "alerts_log_premium.csv")
+RESULTS_LOG = os.path.join(LOG_DIR, "results_log_premium.csv")
+
+# =========================
 # TIME WINDOWS (JOUW WENS)
 # =========================
-# Alleen alerts sturen in:
 # 1e helft: 15-35
 # 2e helft: 50-85
 FIRST_HALF_MIN = 15
@@ -102,9 +111,6 @@ SCORE_STATE = {}                 # fid -> {"score": (gh,ga), "changed_at": epoch
 # Pending alerts voor HIT/MISS tracking
 PENDING = {}  # fid -> dict met pick info
 
-# CSV logging
-ALERTS_LOG = "alerts_log_premium.csv"
-RESULTS_LOG = "results_log_premium.csv"
 
 # =========================
 # BASIC HELPERS
@@ -117,23 +123,28 @@ def send_message(text):
     except:
         pass
 
+
 def api_get(path, params=None):
     r = requests.get(f"{BASE_URL}{path}", headers=HEADERS, params=params, timeout=25)
     r.raise_for_status()
     return r.json()
 
+
 def get_live_matches():
     data = api_get("/fixtures", params={"live": "all"})
     return data.get("response", [])
+
 
 def get_fixture_by_id(fid):
     data = api_get("/fixtures", params={"id": fid})
     resp = data.get("response", [])
     return resp[0] if resp else None
 
+
 def get_match_statistics(fixture_id):
     data = api_get("/fixtures/statistics", params={"fixture": fixture_id})
     return data.get("response", [])
+
 
 def safe_int(v):
     if v is None:
@@ -145,11 +156,13 @@ def safe_int(v):
     except:
         return 0
 
+
 def stat(team_stats_list, name):
     for s in team_stats_list:
         if s.get("type") == name:
             return safe_int(s.get("value"))
     return 0
+
 
 def get_big_chances(team_stats_list):
     for key in ["Big Chances", "Big chances", "Big Chances Created", "Big chances created"]:
@@ -158,8 +171,10 @@ def get_big_chances(team_stats_list):
             return v
     return 0
 
+
 def clamp_nonnegative(x):
     return x if x > 0 else 0
+
 
 def is_excluded_match(league_name, home_name, away_name):
     text = f"{league_name} {home_name} {away_name}".lower()
@@ -168,10 +183,13 @@ def is_excluded_match(league_name, home_name, away_name):
             return True
     return False
 
+
 def cleanup_finished(fid):
     HALF_TIME_SNAPSHOT.pop(fid, None)
     SCORE_STATE.pop(fid, None)
-    PENDING.pop(fid, None)
+    # ⚠️ PENDING wordt pas weggehaald als het resultaat resolved is
+    # zodat je geen HIT/MISS mist na 00:00.
+
 
 # =========================
 # ODDS
@@ -191,6 +209,7 @@ def get_live_odds(fixture_id):
         except:
             continue
     return None
+
 
 def find_next_goal_odds(odds_response, predicted_side, home_name, away_name):
     if not odds_response:
@@ -227,6 +246,7 @@ def find_next_goal_odds(odds_response, predicted_side, home_name, away_name):
                             return None
     return None
 
+
 # =========================
 # CONFIDENCE (0-100)
 # =========================
@@ -239,6 +259,7 @@ def confidence_score(dominant_score, gap, sot_diff, red_adv, big_diff):
     score += min(10, big_diff * 6)
     return int(max(0, min(100, score)))
 
+
 # =========================
 # LOGGING
 # =========================
@@ -247,9 +268,11 @@ def ensure_csv_header(file_path, header_cols):
         with open(file_path, "r", newline="", encoding="utf-8") as f:
             return
     except FileNotFoundError:
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
         with open(file_path, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(header_cols)
+
 
 def log_alert_row(row):
     ensure_csv_header(ALERTS_LOG, [
@@ -260,6 +283,7 @@ def log_alert_row(row):
     with open(ALERTS_LOG, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(row)
 
+
 def log_result_row(row):
     ensure_csv_header(RESULTS_LOG, [
         "timestamp", "fixture_id", "tier", "home", "away", "pick", "result",
@@ -268,51 +292,146 @@ def log_result_row(row):
     with open(RESULTS_LOG, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(row)
 
+
 # =========================
-# DAILY REPORT (gisteren)
+# DAILY REPORT (PRO)
 # =========================
 def send_daily_report(report_date):
     day_str = report_date.isoformat()
 
-    normal_count = premium_count = extreme_count = 0
-    total_alerts = 0
+    # alerts van die dag ophalen
+    alerts = []
     try:
         with open(ALERTS_LOG, "r", encoding="utf-8") as f:
             rows = list(csv.DictReader(f))
-        day_rows = [r for r in rows if r["timestamp"].startswith(day_str)]
-        normal_count = sum(1 for r in day_rows if r["tier"] == "NORMAL")
-        premium_count = sum(1 for r in day_rows if r["tier"] == "PREMIUM")
-        extreme_count = sum(1 for r in day_rows if r["tier"] == "EXTREME")
-        total_alerts = len(day_rows)
+        alerts = [r for r in rows if r["timestamp"].startswith(day_str)]
     except FileNotFoundError:
-        pass
+        alerts = []
 
-    hits = misses = 0
-    total_results = 0
+    # results van die dag ophalen
+    results = []
     try:
         with open(RESULTS_LOG, "r", encoding="utf-8") as f:
             rrows = list(csv.DictReader(f))
-        day_rrows = [r for r in rrows if r["timestamp"].startswith(day_str)]
-        hits = sum(1 for r in day_rrows if r["result"] == "HIT")
-        misses = sum(1 for r in day_rrows if r["result"] == "MISS")
-        total_results = len(day_rrows)
+        results = [r for r in rrows if r["timestamp"].startswith(day_str)]
     except FileNotFoundError:
-        pass
+        results = []
 
-    hitrate = 0
-    if total_results > 0:
-        hitrate = round((hits / total_results) * 100, 1)
+    # result map (fixture_id -> HIT/MISS)
+    res_map = {}
+    for r in results:
+        fid = r.get("fixture_id")
+        if fid:
+            res_map[str(fid)] = r.get("result", "")
+
+    # totals
+    total_alerts = len(alerts)
+    resolved = 0
+    hits = 0
+    misses = 0
+
+    # tier stats
+    tiers = {
+        "NORMAL": {"alerts": 0, "hit": 0, "miss": 0},
+        "PREMIUM": {"alerts": 0, "hit": 0, "miss": 0},
+        "EXTREME": {"alerts": 0, "hit": 0, "miss": 0},
+    }
+
+    # league stats
+    leagues = {}  # league -> {"alerts":0,"hit":0,"miss":0}
+
+    # premium low tempo trap
+    low_tempo_premium = 0
+    low_tempo_premium_miss = 0
+
+    for a in alerts:
+        tier = a.get("tier", "NORMAL")
+        fid = str(a.get("fixture_id", ""))
+
+        tiers.setdefault(tier, {"alerts": 0, "hit": 0, "miss": 0})
+        tiers[tier]["alerts"] += 1
+
+        league = a.get("league", "Unknown")
+        if league not in leagues:
+            leagues[league] = {"alerts": 0, "hit": 0, "miss": 0}
+        leagues[league]["alerts"] += 1
+
+        result = res_map.get(fid, "")
+        if result in ("HIT", "MISS"):
+            resolved += 1
+            if result == "HIT":
+                hits += 1
+                tiers[tier]["hit"] += 1
+                leagues[league]["hit"] += 1
+            else:
+                misses += 1
+                tiers[tier]["miss"] += 1
+                leagues[league]["miss"] += 1
+
+        # low tempo check (alleen PREMIUM)
+        if tier == "PREMIUM":
+            try:
+                dom_sot_half = int(float(a.get("sot_half", 0)))
+                dom_shots_half = int(float(a.get("shots_half", 0)))
+                opp_shots_half = int(float(a.get("opp_shots_half", 0)))
+                total_shots_half = dom_shots_half + opp_shots_half
+
+                # low tempo = vaak 0-0 valkuil
+                if dom_sot_half < 3 or total_shots_half < 10:
+                    low_tempo_premium += 1
+                    if result == "MISS":
+                        low_tempo_premium_miss += 1
+            except:
+                pass
+
+    def rate(h, m):
+        t = h + m
+        return round((h / t) * 100, 1) if t > 0 else 0.0
+
+    total_hitrate = rate(hits, misses)
+
+    normal_rate = rate(tiers["NORMAL"]["hit"], tiers["NORMAL"]["miss"])
+    premium_rate = rate(tiers["PREMIUM"]["hit"], tiers["PREMIUM"]["miss"])
+    extreme_rate = rate(tiers["EXTREME"]["hit"], tiers["EXTREME"]["miss"])
+
+    # Top leagues (min 2 samples)
+    league_list = []
+    for lg, d in leagues.items():
+        if (d["hit"] + d["miss"]) >= 2:
+            league_list.append((lg, rate(d["hit"], d["miss"]), d["hit"], d["miss"], d["alerts"]))
+    league_list.sort(key=lambda x: x[1], reverse=True)
+    top_leagues = league_list[:3]
+
+    # Optimalisatie tips (heuristics)
+    tips = []
+    if tiers["EXTREME"]["alerts"] >= 6:
+        tips.append("• Te veel EXTREME → verhoog EXTREME_SCORE of EXTREME_MIN_GAP.")
+    if premium_rate < 55 and tiers["PREMIUM"]["alerts"] >= 6:
+        tips.append("• PREMIUM hitrate laag → maak PREMIUM strenger (PREMIUM_MIN_GAP of PREMIUM_MIN_CONF omhoog).")
+    if low_tempo_premium_miss >= 2:
+        tips.append("• Veel low-tempo PREMIUM misses → pace filter strenger (dom SOT ≥3 + totaal shots ≥10).")
+    if not tips:
+        tips.append("• Instellingen zijn stabiel ✅ (geen grote aanpassingen nodig vandaag).")
+
+    # Top leagues tekst
+    if top_leagues:
+        league_txt = "\n".join([f"• {lg}: {hr}% ({h}-{m})" for lg, hr, h, m, _ in top_leagues])
+    else:
+        league_txt = "• Nog te weinig league-data (min 2 results per league)."
 
     send_message(
         f"📊 DAGRAPPORT ({day_str})\n\n"
-        f"⚠️ NORMAL: {normal_count}\n"
-        f"💎 PREMIUM: {premium_count}\n"
-        f"🔥 EXTREME: {extreme_count}\n"
-        f"📌 Totaal alerts: {total_alerts}\n\n"
+        f"📌 Alerts: {total_alerts}\n"
         f"✅ HIT: {hits}\n"
         f"❌ MISS: {misses}\n"
-        f"🎯 Hitrate: {hitrate}%"
+        f"🎯 Hitrate: {total_hitrate}%\n\n"
+        f"⚠️ NORMAL: {tiers['NORMAL']['alerts']} | {normal_rate}%\n"
+        f"💎 PREMIUM: {tiers['PREMIUM']['alerts']} | {premium_rate}%\n"
+        f"🔥 EXTREME: {tiers['EXTREME']['alerts']} | {extreme_rate}%\n\n"
+        f"🏆 TOP LEAGUES (beste hitrate):\n{league_txt}\n\n"
+        f"🤖 Optimalisatie tips:\n" + "\n".join(tips)
     )
+
 
 # =========================
 # HIT/MISS TRACKING
@@ -397,16 +516,19 @@ def resolve_pending_from_match(match):
         cleanup_finished(fid)
         return
 
+
 def resolve_pending_not_in_live():
     for fid in list(PENDING.keys()):
         match = get_fixture_by_id(fid)
         if match:
             resolve_pending_from_match(match)
 
+
 # =========================
 # START
 # =========================
-send_message("🟢 Bot gestart – NORMAL + PREMIUM + EXTREME (zeldzaam) + HIT/MISS + DAGRAPPORT ✅")
+send_message("🟢 Bot gestart – NORMAL + PREMIUM + EXTREME + HIT/MISS + PRO DAGRAPPORT ✅")
+
 
 # =========================
 # MAIN LOOP
@@ -422,8 +544,8 @@ while True:
             ALERTED_MATCHES.clear()
             HALF_TIME_SNAPSHOT.clear()
             SCORE_STATE.clear()
-            PENDING.clear()
 
+            # ✅ PENDING NIET clearen -> anders mis je results na 00:00
             send_message("🔄 Nieuwe dag — reset uitgevoerd ✅")
 
         matches = get_live_matches()
