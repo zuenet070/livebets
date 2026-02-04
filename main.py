@@ -933,7 +933,7 @@ while True:
             # anti spam: 1 alert per loop
             break
 
-        time.sleep(90)
+        time.sleep(91)
 
     except Exception as e:
         send_message(f"❌ ERROR: {e}")
