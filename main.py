@@ -4,40 +4,43 @@ import requests
 import csv
 from datetime import date, datetime, timedelta
 
-# =========================
+# =========================================================
 # ENV VARS
-# =========================
+# =========================================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 API_KEY = os.getenv("API_FOOTBALL_KEY")
 
 if not BOT_TOKEN or not CHAT_ID or not API_KEY:
     print("❌ ERROR: Missing env vars. Check BOT_TOKEN, CHAT_ID, API_FOOTBALL_KEY")
-    exit()
+    raise SystemExit(1)
 
 BASE_URL = "https://v3.football.api-sports.io"
 HEADERS = {"x-apisports-key": API_KEY}
 
-# =========================
-# TIME WINDOWS
-# =========================
+# =========================================================
+# TIME WINDOWS (LESS STRICT)
+# =========================================================
 FIRST_HALF_MIN = 15
-FIRST_HALF_MAX = 35
+FIRST_HALF_MAX = 42   # was 35 → ruimer zodat je 33-45 niet mist
 SECOND_HALF_MIN = 50
 SECOND_HALF_MAX = 85
 
+# Risk window (30-39): minder streng dan eerst
 EARLY_RISK_START = 30
 EARLY_RISK_END = 39
 
-# Goal cooldown (6 min)
+# Goal cooldown (jouw wens: 6 min)
 GOAL_COOLDOWN_SECONDS = 360
-POST_GOAL_STRICT_UNTIL_SECONDS = 600
+# Extra streng na goal (nu milder / slimmer)
+POST_GOAL_STRICT_UNTIL_SECONDS = 480  # was 600 → 8 min
 
-MAX_BEHIND_GOALS = 2
+# Score regels
+MAX_BEHIND_GOALS = 2  # dominant team mag max 2 goals achter
 
-# =========================
-# TIERS
-# =========================
+# =========================================================
+# TIERS (basis)
+# =========================================================
 NORMAL_MIN_SCORE = 13
 NORMAL_MIN_GAP = 18.0
 NORMAL_MAX_OPP_SOT = 2
@@ -55,39 +58,42 @@ EXTREME_MIN_GAP = 32.0
 EXTREME_MAX_OPP_SOT = 1
 EXTREME_MAX_OPP_SHOTS = 6
 
-# =========================
-# Weights (Big Chances weg)
-# =========================
+# =========================================================
+# Weights (Big Chances verwijderd)
+# =========================================================
 W_SOT = 6
 W_SHOTS = 1
 W_CORNERS = 1
 W_POSSESSION = 0.07
 RED_CARD_BONUS = 6
 
-# =========================
-# Pace regels (leidend)
-# =========================
-PACE1_MIN_SHOTS_10 = 7
-PACE1_MIN_SHOTS_5 = 3
-PACE1_MIN_SOT_10 = 2
+# =========================================================
+# Pace regels (LESS STRICT)
+# =========================================================
+# 1e helft (na 20’)
+PACE1_MIN_SHOTS_10 = 6  # was 7
+PACE1_MIN_SHOTS_5 = 2   # was 3
+PACE1_MIN_SOT_10 = 1    # was 2
 
-PACE2_MIN_SHOTS_10 = 8
-PACE2_MIN_SHOTS_5 = 3
-PACE2_MIN_SOT_10 = 2
+# 2e helft
+PACE2_MIN_SHOTS_10 = 7  # was 8
+PACE2_MIN_SHOTS_5 = 2   # was 3
+PACE2_MIN_SOT_10 = 1    # was 2
 
+# Late game (75+)
 LATE_MINUTE = 75
 LATE_MIN_SOT_DIFF = 2
-LATE_MIN_SHOTS_10 = 8
-LATE_MAX_OPP_SOT = 1
-LATE_MIN_ODD = 1.6
+LATE_MIN_SHOTS_10 = 7   # was 8
+LATE_MAX_OPP_SOT = 2    # was 1 (iets soepeler)
+LATE_MIN_ODD = 1.55     # was 1.6 (iets soepeler)
 
 # Odds filter (1X2)
-ODD_MIN = 1.3
+ODD_MIN = 1.5
 REQUIRE_ODDS = False
 
-# =========================
+# =========================================================
 # Blacklist rommel
-# =========================
+# =========================================================
 EXCLUDE_KEYWORDS = [
     "U21", "U20", "U19", "U18", "U17", "U16",
     "Youth", "Junior",
@@ -97,28 +103,30 @@ EXCLUDE_KEYWORDS = [
     "Esports", "E-sports", "Virtual",
 ]
 
-# =========================
+# =========================================================
 # STATE
-# =========================
+# =========================================================
 TODAY = date.today()
 
 ALERTED_MATCHES = set()
 HALF_TIME_SNAPSHOT = {}
-SCORE_STATE = {}
-HISTORY = {}
-PENDING = {}
+SCORE_STATE = {}  # fid -> {"score": (gh,ga), "changed_at": epoch}
 
+# Rolling history for pace
+HISTORY = {}  # fid -> list of snapshots dicts
+
+# Pending alerts for HIT/MISS tracking
+PENDING = {}  # fid -> dict
+
+# CSV logging
 ALERTS_LOG = "alerts_log_premium.csv"
 RESULTS_LOG = "results_log_premium.csv"
-WEEKLY_REPORTS_LOG = "weekly_reports.csv"  # extra export
+WEEKLY_SUMMARY_LOG = "weekly_summary.csv"
 
-# Weekly report state (voorkomt spam)
-LAST_WEEKLY_REPORT_DATE = None  # date
-
-# =========================
+# =========================================================
 # BASIC HELPERS
-# =========================
-def send_message(text):
+# =========================================================
+def send_message(text: str):
     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
     payload = {"chat_id": CHAT_ID, "text": text}
     try:
@@ -184,9 +192,9 @@ def cleanup_finished(fid):
     PENDING.pop(fid, None)
     HISTORY.pop(fid, None)
 
-# =========================
+# =========================================================
 # HISTORY / PACE
-# =========================
+# =========================================================
 def update_history(fid, minute, hsot, asot, hshots, ashots, hcorn, acorn):
     if fid not in HISTORY:
         HISTORY[fid] = []
@@ -195,8 +203,8 @@ def update_history(fid, minute, hsot, asot, hshots, ashots, hcorn, acorn):
         hist[-1] = {"minute": minute, "hsot": hsot, "asot": asot, "hshots": hshots, "ashots": ashots, "hcorn": hcorn, "acorn": acorn}
     else:
         hist.append({"minute": minute, "hsot": hsot, "asot": asot, "hshots": hshots, "ashots": ashots, "hcorn": hcorn, "acorn": acorn})
-    if len(hist) > 60:
-        HISTORY[fid] = hist[-60:]
+    if len(hist) > 80:
+        HISTORY[fid] = hist[-80:]
 
 def get_snapshot_at_or_before(hist, target_minute):
     best = None
@@ -214,7 +222,6 @@ def pace_last_window(fid, cur_minute, window_minutes, pick_side):
     start_minute = max(0, cur_minute - window_minutes)
     cur = get_snapshot_at_or_before(hist, cur_minute)
     old = get_snapshot_at_or_before(hist, start_minute)
-
     if not cur or not old:
         return (0, 0)
 
@@ -227,9 +234,9 @@ def pace_last_window(fid, cur_minute, window_minutes, pick_side):
 
     return (shots, sot)
 
-# =========================
+# =========================================================
 # ODDS (1X2)
-# =========================
+# =========================================================
 def get_live_odds(fixture_id):
     endpoints = [
         ("/odds/live", {"fixture": fixture_id}),
@@ -265,20 +272,17 @@ def find_1x2_odd(odds_response, pick_side, home_name, away_name):
                 values = bet.get("values", [])
                 for v in values:
                     v_value = (v.get("value") or "").strip().lower()
-                    if v_value == want:
-                        return safe_float(v.get("odd"))
-                    if want == "1" and v_value in ["home", home_name.lower()]:
-                        return safe_float(v.get("odd"))
-                    if want == "2" and v_value in ["away", away_name.lower()]:
+                    if v_value == want or (want == "1" and v_value in ["home", home_name.lower()]) or (want == "2" and v_value in ["away", away_name.lower()]):
                         return safe_float(v.get("odd"))
     return None
 
-# =========================
-# CONFIDENCE
-# =========================
+# =========================================================
+# CONFIDENCE (pace-leidend)
+# =========================================================
 def confidence_score(gap, sot_diff_total, opp_sot, pace10_shots, pace5_shots, pace10_sot, odd_value):
     score = 0
 
+    # Pace
     if pace10_shots >= 8:
         score += 20
     elif pace10_shots >= 6:
@@ -288,20 +292,25 @@ def confidence_score(gap, sot_diff_total, opp_sot, pace10_shots, pace5_shots, pa
         score += 20
     elif pace5_shots >= 3:
         score += 12
+    elif pace5_shots >= 2:
+        score += 6
 
     if pace10_sot >= 2:
         score += 20
     elif pace10_sot == 1:
         score += 10
 
+    # Dominantie/druk
     score += min(20, max(0, gap) * 0.6)
     score += min(10, max(0, sot_diff_total) * 3)
 
+    # Opp threat
     if opp_sot == 0:
         score += 15
     elif opp_sot == 1:
         score += 8
 
+    # Odds (bonus)
     if odd_value is not None:
         if odd_value >= 2.0:
             score += 10
@@ -312,12 +321,12 @@ def confidence_score(gap, sot_diff_total, opp_sot, pace10_shots, pace5_shots, pa
 
     return int(max(0, min(100, score)))
 
-# =========================
-# LOGGING (CSV)
-# =========================
+# =========================================================
+# LOGGING (maakt bestanden zelf)
+# =========================================================
 def ensure_csv_header(file_path, header_cols):
     try:
-        with open(file_path, "r", newline="", encoding="utf-8") as f:
+        with open(file_path, "r", newline="", encoding="utf-8") as _:
             return
     except FileNotFoundError:
         with open(file_path, "w", newline="", encoding="utf-8") as f:
@@ -326,11 +335,10 @@ def ensure_csv_header(file_path, header_cols):
 def log_alert_row(row):
     ensure_csv_header(ALERTS_LOG, [
         "timestamp", "tier", "fixture_id", "league", "home", "away",
-        "minute", "half", "score", "pick", "dominant_score", "gap", "confidence", "odd_1x2",
-        "since_goal_change_sec", "in_early_risk_window", "in_post_goal_strict", "is_late_game",
-        "pace10_shots", "pace10_sot", "pace5_shots", "pace5_sot", "prev5_shots", "prev5_sot",
-        "sot_half_dom", "shots_half_dom", "opp_sot_half", "opp_shots_half",
-        "corners_half_dom", "corners_half_opp", "pos_dom_total", "pos_opp_total", "red_home_total", "red_away_total"
+        "minute", "score", "pick", "dominant_score", "gap", "confidence", "odd_1x2",
+        "pace10_shots", "pace10_sot", "pace5_shots", "pace5_sot",
+        "sot_half", "shots_half", "opp_sot_half", "opp_shots_half",
+        "is_risk_31_39", "post_goal_strict"
     ])
     with open(ALERTS_LOG, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(row)
@@ -343,58 +351,217 @@ def log_result_row(row):
     with open(RESULTS_LOG, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(row)
 
-def log_weekly_report_row(row):
-    ensure_csv_header(WEEKLY_REPORTS_LOG, [
-        "week_ending", "alerts_resolved", "hits", "misses", "hitrate",
-        "normal_alerts", "normal_hitrate",
-        "premium_alerts", "premium_hitrate",
-        "extreme_alerts", "extreme_hitrate",
-        "bad_window_30_39_alerts", "bad_window_30_39_hitrate",
-        "post_goal_strict_alerts", "post_goal_strict_hitrate",
-        "late_game_alerts", "late_game_hitrate"
+# =========================================================
+# DAILY REPORT (zonder leagues)
+# =========================================================
+def send_daily_report(report_date):
+    day_str = report_date.isoformat()
+
+    normal_count = premium_count = extreme_count = 0
+    total_alerts = 0
+    try:
+        with open(ALERTS_LOG, "r", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        day_rows = [r for r in rows if r["timestamp"].startswith(day_str)]
+        normal_count = sum(1 for r in day_rows if r["tier"] == "NORMAL")
+        premium_count = sum(1 for r in day_rows if r["tier"] == "PREMIUM")
+        extreme_count = sum(1 for r in day_rows if r["tier"] == "EXTREME")
+        total_alerts = len(day_rows)
+    except FileNotFoundError:
+        pass
+
+    hits = misses = 0
+    total_results = 0
+    try:
+        with open(RESULTS_LOG, "r", encoding="utf-8") as f:
+            rrows = list(csv.DictReader(f))
+        day_rrows = [r for r in rrows if r["timestamp"].startswith(day_str)]
+        hits = sum(1 for r in day_rrows if r["result"] == "HIT")
+        misses = sum(1 for r in day_rrows if r["result"] == "MISS")
+        total_results = len(day_rrows)
+    except FileNotFoundError:
+        pass
+
+    hitrate = round((hits / total_results) * 100, 1) if total_results else 0.0
+
+    send_message(
+        f"📊 DAGRAPPORT ({day_str})\n\n"
+        f"📌 Alerts: {total_alerts}\n"
+        f"✅ HIT: {hits}\n"
+        f"❌ MISS: {misses}\n"
+        f"🎯 Hitrate (resolved): {hitrate}%\n\n"
+        f"⚠️ NORMAL: {normal_count}\n"
+        f"💎 PREMIUM: {premium_count}\n"
+        f"🔥 EXTREME: {extreme_count}\n\n"
+        f"🤖 Optimalisatie tips:\n"
+        f"• Minder strenge 1e helft + milde risk window + pace iets lager ✅\n"
+        f"• 6 min goal cooldown + milde post-goal strict ✅"
+    )
+
+# =========================================================
+# WEEKLY REPORT (in dezelfde file → geen module error)
+# =========================================================
+def _read_csv_rows(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return list(csv.DictReader(f))
+    except FileNotFoundError:
+        return []
+
+def build_weekly_report(days=7):
+    since = datetime.now() - timedelta(days=days)
+    alerts = _read_csv_rows(ALERTS_LOG)
+    results = _read_csv_rows(RESULTS_LOG)
+
+    # filter resolved results laatste X dagen
+    results_recent = []
+    for r in results:
+        try:
+            ts = datetime.fromisoformat(r["timestamp"])
+            if ts >= since:
+                results_recent.append(r)
+        except:
+            continue
+
+    if not results_recent:
+        return ("📊 WEEKRAPPORT\nGeen (resolved) data in de laatste 7 dagen.", None)
+
+    total = len(results_recent)
+    hits = sum(1 for r in results_recent if r.get("result") == "HIT")
+    misses = sum(1 for r in results_recent if r.get("result") == "MISS")
+    hitrate = round((hits / total) * 100, 1) if total else 0.0
+
+    # tier stats (op results)
+    def tier_counts(tier):
+        rows = [r for r in results_recent if r.get("tier") == tier]
+        t = len(rows)
+        h = sum(1 for r in rows if r.get("result") == "HIT")
+        hr = round((h / t) * 100, 1) if t else 0.0
+        return t, hr
+
+    n_cnt, n_hr = tier_counts("NORMAL")
+    p_cnt, p_hr = tier_counts("PREMIUM")
+    e_cnt, e_hr = tier_counts("EXTREME")
+
+    # risk window + post-goal strict analyse (op alerts, gekoppeld via fixture_id)
+    alerts_map = {}
+    for a in alerts:
+        fid = a.get("fixture_id")
+        if fid:
+            alerts_map[fid] = a
+
+    risk_cnt = risk_hit = 0
+    pg_cnt = pg_hit = 0
+    late_cnt = late_hit = 0
+
+    for r in results_recent:
+        fid = r.get("fixture_id")
+        a = alerts_map.get(fid)
+        if not a:
+            continue
+
+        try:
+            minute_alert = int(float(a.get("minute", "0")))
+        except:
+            minute_alert = 0
+
+        is_risk = (a.get("is_risk_31_39") == "1")
+        is_pg = (a.get("post_goal_strict") == "1")
+        is_late = (minute_alert >= LATE_MINUTE)
+
+        if is_risk:
+            risk_cnt += 1
+            if r.get("result") == "HIT":
+                risk_hit += 1
+
+        if is_pg:
+            pg_cnt += 1
+            if r.get("result") == "HIT":
+                pg_hit += 1
+
+        if is_late:
+            late_cnt += 1
+            if r.get("result") == "HIT":
+                late_hit += 1
+
+    def pct(h, t):
+        return round((h / t) * 100, 1) if t else 0.0
+
+    risk_hr = pct(risk_hit, risk_cnt)
+    pg_hr = pct(pg_hit, pg_cnt)
+    late_hr = pct(late_hit, late_cnt)
+
+    # simpele tips
+    tips = []
+    if risk_cnt >= 5 and risk_hr < hitrate:
+        tips.append("• 31–39 min window: nog steeds tricky → eventueel SOT diff eis +1 of conf +5.")
+    if pg_cnt >= 5 and pg_hr < hitrate:
+        tips.append("• Post-goal window: teveel false momentum → maak post-goal strict weer iets strenger.")
+    if late_cnt >= 5 and late_hr < hitrate:
+        tips.append("• Late-game misses: verhoog LATE_MIN_SHOTS_10 of LATE_MIN_ODD iets.")
+
+    if not tips:
+        tips.append("• Instellingen lijken stabiel ✅ (kleine tweaks pas na meer data).")
+
+    week_ending = datetime.now().date().isoformat()
+
+    text = (
+        f"📊 WEEKRAPPORT (laatste {days} dagen)\n"
+        f"Week ending: {week_ending}\n\n"
+        f"📌 Resolved alerts: {total}\n"
+        f"✅ HIT: {hits}\n"
+        f"❌ MISS: {misses}\n"
+        f"🎯 Hitrate: {hitrate}%\n\n"
+        f"⚠️ NORMAL: {n_cnt} | {n_hr}%\n"
+        f"💎 PREMIUM: {p_cnt} | {p_hr}%\n"
+        f"🔥 EXTREME: {e_cnt} | {e_hr}%\n\n"
+        f"🧪 Checks:\n"
+        f"🧨 Risk window 31–39: {risk_cnt} | {risk_hr}%\n"
+        f"⏱️ Post-goal strict: {pg_cnt} | {pg_hr}%\n"
+        f"🕯️ Late-game (75+): {late_cnt} | {late_hr}%\n\n"
+        f"🤖 Optimalisatie tips:\n" + "\n".join(tips)
+    )
+
+    # weekly summary csv row
+    summary_row = [
+        week_ending, days, total, hits, misses, hitrate,
+        n_cnt, n_hr, p_cnt, p_hr, e_cnt, e_hr,
+        risk_cnt, risk_hr, pg_cnt, pg_hr, late_cnt, late_hr
+    ]
+
+    return (text, summary_row)
+
+def log_weekly_summary(row):
+    ensure_csv_header(WEEKLY_SUMMARY_LOG, [
+        "week_ending", "days", "resolved_total", "hits", "misses", "hitrate",
+        "normal_cnt", "normal_hr", "premium_cnt", "premium_hr", "extreme_cnt", "extreme_hr",
+        "risk_cnt", "risk_hr", "post_goal_cnt", "post_goal_hr", "late_cnt", "late_hr"
     ])
-    with open(WEEKLY_REPORTS_LOG, "a", newline="", encoding="utf-8") as f:
+    with open(WEEKLY_SUMMARY_LOG, "a", newline="", encoding="utf-8") as f:
         csv.writer(f).writerow(row)
 
-# =========================
-# WEEKLY REPORT (laatste 7 dagen) -> Telegram
-# =========================
-def run_weekly_report():
-    try:
-        # Local import (bestand bestaat in project)
-        from weekly_analyze import generate_weekly_summary
-        summary_text, summary_row = generate_weekly_summary(ALERTS_LOG, RESULTS_LOG, days=7)
-
-        # stuur Telegram
-        send_message(summary_text)
-
-        # schrijf ook naar csv
-        if summary_row:
-            log_weekly_report_row(summary_row)
-
-    except Exception as e:
-        send_message(f"❌ WEEKLY REPORT ERROR: {e}")
-
-def should_run_weekly_report():
-    global LAST_WEEKLY_REPORT_DATE
+def maybe_send_weekly_report():
+    # 1x per dag checken; sturen op maandag 12:00 (server time)
     now = datetime.now()
+    if now.weekday() != 0:  # maandag = 0
+        return
+    if not (11 <= now.hour <= 12):  # venster 11:00-12:59 om 1x te pakken
+        return
 
-    # 1x per week: maandag na 10:00
-    is_monday = now.weekday() == 0
-    after_time = now.hour >= 10
+    # voorkom dubbel sturen: check of er vandaag al een weekly_summary row is
+    today_str = now.date().isoformat()
+    rows = _read_csv_rows(WEEKLY_SUMMARY_LOG)
+    if any(r.get("week_ending") == today_str for r in rows):
+        return
 
-    if not (is_monday and after_time):
-        return False
+    text, row = build_weekly_report(days=7)
+    send_message(text)
+    if row:
+        log_weekly_summary(row)
 
-    # nog niet gedaan vandaag
-    if LAST_WEEKLY_REPORT_DATE == now.date():
-        return False
-
-    return True
-
-# =========================
+# =========================================================
 # HIT/MISS TRACKING
-# =========================
+# =========================================================
 def resolve_pending_from_match(match):
     fixture = match.get("fixture", {})
     fid = fixture.get("id")
@@ -414,34 +581,21 @@ def resolve_pending_from_match(match):
     goal_away = ga > old_ga
 
     if goal_home or goal_away:
-        if goal_home and not goal_away:
-            scorer = "HOME"
-        elif goal_away and not goal_home:
-            scorer = "AWAY"
-        else:
-            scorer = "HOME" if goal_home else "AWAY"
-
+        scorer = "HOME" if goal_home and not goal_away else "AWAY" if goal_away and not goal_home else ("HOME" if goal_home else "AWAY")
         result = "HIT" if scorer == p["pick_side"] else "MISS"
 
         send_message(
             f"📌 RESULT ({p['tier']})\n\n"
             f"{p['home']} vs {p['away']}\n"
             f"Pick: {p['pick_team']}\n\n"
-            f"{'✅ HIT' if result == 'HIT' else '❌ MISS'} — goal rond {minute}'\n"
+            f"{'✅ HIT' if result == 'HIT' else '❌ MISS'} — goal gevallen rond {minute}'\n"
             f"Score: {old_gh}-{old_ga} ➜ {gh}-{ga}"
         )
 
         log_result_row([
             datetime.now().isoformat(timespec="seconds"),
-            fid,
-            p["tier"],
-            p["home"],
-            p["away"],
-            p["pick_team"],
-            result,
-            minute,
-            f"{old_gh}-{old_ga}",
-            f"{gh}-{ga}"
+            fid, p["tier"], p["home"], p["away"], p["pick_team"],
+            result, minute, f"{old_gh}-{old_ga}", f"{gh}-{ga}"
         ])
 
         PENDING.pop(fid, None)
@@ -452,21 +606,14 @@ def resolve_pending_from_match(match):
             f"📌 RESULT ({p['tier']})\n\n"
             f"{p['home']} vs {p['away']}\n"
             f"Pick: {p['pick_team']}\n\n"
-            f"❌ MISS — geen volgende goal meer.\n"
+            f"❌ MISS — geen volgende goal meer gevallen.\n"
             f"Score bleef: {gh}-{ga}"
         )
 
         log_result_row([
             datetime.now().isoformat(timespec="seconds"),
-            fid,
-            p["tier"],
-            p["home"],
-            p["away"],
-            p["pick_team"],
-            "MISS",
-            minute,
-            f"{old_gh}-{old_ga}",
-            f"{gh}-{ga}"
+            fid, p["tier"], p["home"], p["away"], p["pick_team"],
+            "MISS", minute, f"{old_gh}-{old_ga}", f"{gh}-{ga}"
         ])
 
         PENDING.pop(fid, None)
@@ -479,35 +626,37 @@ def resolve_pending_not_in_live():
         if match:
             resolve_pending_from_match(match)
 
-# =========================
+# =========================================================
 # START
-# =========================
-send_message("🟢 Bot gestart – logging + weekly reports actief ✅")
+# =========================================================
+send_message("🟢 Bot gestart – logging + WEEKRAPPORT + minder strenge filters ✅")
 
-# =========================
+# =========================================================
 # MAIN LOOP
-# =========================
+# =========================================================
 while True:
     try:
-        # weekly report check
-        if should_run_weekly_report():
-            LAST_WEEKLY_REPORT_DATE = datetime.now().date()
-            run_weekly_report()
+        # weekly report check (maandag)
+        maybe_send_weekly_report()
 
-        # new day reset
+        # new day -> report yesterday
         if date.today() != TODAY:
+            yesterday = TODAY
+            send_daily_report(yesterday)
+
             TODAY = date.today()
             ALERTED_MATCHES.clear()
             HALF_TIME_SNAPSHOT.clear()
             SCORE_STATE.clear()
             PENDING.clear()
             HISTORY.clear()
+
             send_message("🔄 Nieuwe dag — reset uitgevoerd ✅")
 
         matches = get_live_matches()
         match_map = {m.get("fixture", {}).get("id"): m for m in matches if m.get("fixture", {}).get("id")}
 
-        # pending results
+        # 1) pending results
         for fid, m in list(match_map.items()):
             if fid in PENDING:
                 resolve_pending_from_match(m)
@@ -515,7 +664,7 @@ while True:
         if PENDING:
             resolve_pending_not_in_live()
 
-        # find new alerts
+        # 2) nieuwe alerts zoeken
         for match in matches:
             fixture = match.get("fixture", {})
             fid = fixture.get("id")
@@ -549,6 +698,7 @@ while True:
             if is_excluded_match(league_name, home, away):
                 continue
 
+            # score
             goals = match.get("goals", {})
             gh = goals.get("home", 0)
             ga = goals.get("away", 0)
@@ -556,21 +706,21 @@ while True:
             if abs(gh - ga) > MAX_BEHIND_GOALS:
                 continue
 
-            # cooldown after goal
-            now_epoch = time.time()
+            # cooldown na score change
+            now = time.time()
             cur_score = (gh, ga)
 
             if fid not in SCORE_STATE:
-                SCORE_STATE[fid] = {"score": cur_score, "changed_at": now_epoch}
+                SCORE_STATE[fid] = {"score": cur_score, "changed_at": now}
             else:
                 if cur_score != SCORE_STATE[fid]["score"]:
-                    SCORE_STATE[fid] = {"score": cur_score, "changed_at": now_epoch}
+                    SCORE_STATE[fid] = {"score": cur_score, "changed_at": now}
 
-            since_change = now_epoch - SCORE_STATE[fid]["changed_at"]
-
+            since_change = now - SCORE_STATE[fid]["changed_at"]
             if since_change < GOAL_COOLDOWN_SECONDS:
                 continue
 
+            # stats
             stats_response = get_match_statistics(fid)
             if not stats_response or len(stats_response) != 2:
                 continue
@@ -593,14 +743,17 @@ while True:
             hred_total = stat(home_stats, "Red Cards")
             ared_total = stat(away_stats, "Red Cards")
 
+            # pace history
             update_history(fid, minute, hsot_total, asot_total, hshots_total, ashots_total, hcorn_total, acorn_total)
 
+            # halftime snapshot
             if (status_short == "HT" or minute >= 45) and fid not in HALF_TIME_SNAPSHOT:
                 HALF_TIME_SNAPSHOT[fid] = {
                     "home": {"sot": hsot_total, "shots": hshots_total, "corn": hcorn_total},
                     "away": {"sot": asot_total, "shots": ashots_total, "corn": acorn_total},
                 }
 
+            # per-half stats
             in_second_half = minute > 45
             use_half_stats = in_second_half and fid in HALF_TIME_SNAPSHOT
 
@@ -613,19 +766,19 @@ while True:
                 hcorn = clamp_nonnegative(hcorn_total - snap["home"]["corn"])
                 acorn = clamp_nonnegative(acorn_total - snap["away"]["corn"])
                 half_text = "2e helft"
-                half_num = 2
             else:
                 hsot, asot = hsot_total, asot_total
                 hshots, ashots = hshots_total, ashots_total
                 hcorn, acorn = hcorn_total, acorn_total
                 half_text = "1e helft"
-                half_num = 1
 
+            # red card bonus
             red_adv_home = ared_total - hred_total
             red_adv_away = hred_total - ared_total
             red_bonus_home = max(0, red_adv_home) * RED_CARD_BONUS
             red_bonus_away = max(0, red_adv_away) * RED_CARD_BONUS
 
+            # dominance score
             score_home = (
                 (hsot - asot) * W_SOT +
                 (hshots - ashots) * W_SHOTS +
@@ -643,6 +796,7 @@ while True:
 
             gap = abs(score_home - score_away)
 
+            # dominant side
             if score_home > score_away:
                 pick_side = "HOME"
                 dom_score = score_home
@@ -651,10 +805,6 @@ while True:
                 opp_sot = asot
                 opp_shots = ashots
                 sot_diff = hsot - asot
-                dom_corn = hcorn
-                opp_corn = acorn
-                pos_dom = hpos_total
-                pos_opp = apos_total
             else:
                 pick_side = "AWAY"
                 dom_score = score_away
@@ -663,48 +813,64 @@ while True:
                 opp_sot = hsot
                 opp_shots = hshots
                 sot_diff = asot - hsot
-                dom_corn = acorn
-                opp_corn = hcorn
-                pos_dom = apos_total
-                pos_opp = hpos_total
 
-            # nooit alert als dominant team VOOR staat
+            # Geen alert als dominant team VOOR staat
             if pick_side == "HOME" and gh > ga:
                 continue
             if pick_side == "AWAY" and ga > gh:
                 continue
 
-            # anti-rust window
-            in_early_risk = EARLY_RISK_START <= minute <= EARLY_RISK_END
-            if in_early_risk:
-                if abs(sot_diff) < 2:
+            # comeback max 2 goals
+            if pick_side == "HOME" and (ga - gh) > MAX_BEHIND_GOALS:
+                continue
+            if pick_side == "AWAY" and (gh - ga) > MAX_BEHIND_GOALS:
+                continue
+
+            # Risk window 30-39: minder streng (basisfilter)
+            is_risk = 1 if (EARLY_RISK_START <= minute <= EARLY_RISK_END) else 0
+            if is_risk:
+                if abs(sot_diff) < 3:   # was 4
                     continue
 
+            # Pace (dominant team)
             pace10_shots, pace10_sot = pace_last_window(fid, minute, 10, pick_side)
             pace5_shots, pace5_sot = pace_last_window(fid, minute, 5, pick_side)
-            prev5_shots, prev5_sot = pace_last_window(fid, max(0, minute - 5), 5, pick_side)
+            prev5_shots, prev5_sot = pace_last_window(fid, minute - 5 if minute >= 5 else minute, 5, pick_side)
 
+            # Pace rules
             if minute >= 20 and not in_second_half:
-                if pace10_shots < PACE1_MIN_SHOTS_10: continue
-                if pace5_shots < PACE1_MIN_SHOTS_5: continue
-                if pace10_sot < PACE1_MIN_SOT_10: continue
+                if pace10_shots < PACE1_MIN_SHOTS_10:
+                    continue
+                if pace5_shots < PACE1_MIN_SHOTS_5:
+                    continue
+                if pace10_sot < PACE1_MIN_SOT_10:
+                    continue
 
             if in_second_half:
-                if pace10_shots < PACE2_MIN_SHOTS_10: continue
-                if pace5_shots < PACE2_MIN_SHOTS_5: continue
-                if pace10_sot < PACE2_MIN_SOT_10: 
-                
-        if GOAL_COOLDOWN_SECONDS <= since_change < POST_GOAL_STRICT_UNTIL_SECONDS:
-    if abs(sot_diff) < 2 and pace5_shots < 3:
-        continue
+                if pace10_shots < PACE2_MIN_SHOTS_10:
+                    continue
+                if pace5_shots < PACE2_MIN_SHOTS_5:
+                    continue
+                if pace10_sot < PACE2_MIN_SOT_10:
+                    continue
 
-            is_late_game = minute >= LATE_MINUTE
-            if is_late_game:
-                if abs(sot_diff) < LATE_MIN_SOT_DIFF: continue
-                if pace10_shots < LATE_MIN_SHOTS_10: continue
-                if opp_sot > LATE_MAX_OPP_SOT: continue
+            # Post-goal strict: milder & slimmer (alleen skip als zowel sot_diff als pace5 zwak is)
+            post_goal_strict = 1 if (GOAL_COOLDOWN_SECONDS <= since_change < POST_GOAL_STRICT_UNTIL_SECONDS) else 0
+            if post_goal_strict:
+                if abs(sot_diff) < 2 and pace5_shots < 3:
+                    continue
 
-            # odds (pas nu ophalen)
+            # Late game filter (iets soepeler)
+            if minute >= LATE_MINUTE:
+                if abs(sot_diff) < LATE_MIN_SOT_DIFF:
+                    continue
+                if pace10_shots < LATE_MIN_SHOTS_10:
+                    continue
+                if opp_sot > LATE_MAX_OPP_SOT:
+                    continue
+
+            # Odds pas later ophalen (performance)
+            odd_1x2 = None
             odds_response = get_live_odds(fid)
             odd_1x2 = find_1x2_odd(odds_response, pick_side, home, away)
 
@@ -712,9 +878,10 @@ while True:
                 continue
             if odd_1x2 is not None and odd_1x2 < ODD_MIN:
                 continue
-            if is_late_game and odd_1x2 is not None and odd_1x2 < LATE_MIN_ODD:
+            if minute >= LATE_MINUTE and odd_1x2 is not None and odd_1x2 < LATE_MIN_ODD:
                 continue
 
+            # Confidence
             conf = confidence_score(
                 gap=gap,
                 sot_diff_total=abs(sot_diff),
@@ -725,24 +892,46 @@ while True:
                 odd_value=odd_1x2
             )
 
-            if in_early_risk:
-                if not (abs(sot_diff) >= 3 and pace10_shots >= 10 and conf >= 90):
+            # Risk window extra check (nu milder dan eerst)
+            if is_risk:
+                if not (abs(sot_diff) >= 3 and pace10_shots >= 8 and conf >= 80):
                     continue
 
             pick_team = home if pick_side == "HOME" else away
 
+            red_txt = ""
+            if hred_total or ared_total:
+                red_txt = f"\n🟥 Red Cards: {hred_total} - {ared_total}"
+
+            odds_line = (
+                f"\n💰 1X2 Odd ({pick_team}): {odd_1x2} ✅"
+                if odd_1x2 is not None
+                else "\n💰 1X2 Odd: — (check bookie) 🟡"
+            )
+
+            # Tier
             is_extreme = (
-                dom_score >= EXTREME_SCORE and gap >= EXTREME_MIN_GAP and
-                opp_sot <= EXTREME_MAX_OPP_SOT and opp_shots <= EXTREME_MAX_OPP_SHOTS and conf >= 85
+                dom_score >= EXTREME_SCORE and
+                gap >= EXTREME_MIN_GAP and
+                opp_sot <= EXTREME_MAX_OPP_SOT and
+                opp_shots <= EXTREME_MAX_OPP_SHOTS and
+                conf >= 85
             )
+
             is_premium = (
-                dom_score >= PREMIUM_MIN_SCORE and gap >= PREMIUM_MIN_GAP and
+                dom_score >= PREMIUM_MIN_SCORE and
+                gap >= PREMIUM_MIN_GAP and
                 abs(sot_diff) >= PREMIUM_MIN_SOT_DIFF and
-                opp_sot <= PREMIUM_MAX_OPP_SOT and opp_shots <= PREMIUM_MAX_OPP_SHOTS and conf >= PREMIUM_MIN_CONF
+                opp_sot <= PREMIUM_MAX_OPP_SOT and
+                opp_shots <= PREMIUM_MAX_OPP_SHOTS and
+                conf >= PREMIUM_MIN_CONF
             )
+
             is_normal = (
-                dom_score >= NORMAL_MIN_SCORE and gap >= NORMAL_MIN_GAP and conf >= 55 and
-                not (opp_sot > NORMAL_MAX_OPP_SOT and opp_shots > NORMAL_MAX_OPP_SHOTS)
+                dom_score >= NORMAL_MIN_SCORE and
+                gap >= NORMAL_MIN_GAP and
+                not (opp_sot > NORMAL_MAX_OPP_SOT and opp_shots > NORMAL_MAX_OPP_SHOTS) and
+                conf >= 55
             )
 
             if is_extreme:
@@ -757,9 +946,7 @@ while True:
             else:
                 continue
 
-            odds_line = (f"\n💰 1X2 Odd ({pick_team}): {odd_1x2} ✅" if odd_1x2 is not None else "\n💰 1X2 Odd: — (check bookie) 🟡")
-            red_txt = (f"\n🟥 Red Cards: {hred_total} - {ared_total}" if (hred_total or ared_total) else "")
-
+            # SEND ALERT
             send_message(
                 f"{title} ({half_text})\n\n"
                 f"🏆 {league_name} ({league_country})\n"
@@ -782,7 +969,7 @@ while True:
                 f"➡️ Pick: {pick_team}"
             )
 
-            # ✅ log alert (veel meer analysemogelijkheden)
+            # LOG ALERT
             log_alert_row([
                 datetime.now().isoformat(timespec="seconds"),
                 tier,
@@ -791,27 +978,21 @@ while True:
                 home,
                 away,
                 minute,
-                half_num,
                 f"{gh}-{ga}",
                 pick_team,
                 round(dom_score, 2),
                 round(gap, 2),
                 conf,
                 odd_1x2 if odd_1x2 is not None else "",
-                int(since_change),
-                1 if in_early_risk else 0,
-                1 if in_post_goal_strict else 0,
-                1 if is_late_game else 0,
                 pace10_shots, pace10_sot,
                 pace5_shots, pace5_sot,
-                prev5_shots, prev5_sot,
                 dom_sot, dom_shots,
                 opp_sot, opp_shots,
-                dom_corn, opp_corn,
-                pos_dom, pos_opp,
-                hred_total, ared_total
+                str(is_risk),
+                str(post_goal_strict),
             ])
 
+            # PENDING for HIT/MISS
             PENDING[fid] = {
                 "tier": tier,
                 "home": home,
@@ -822,6 +1003,8 @@ while True:
             }
 
             ALERTED_MATCHES.add(fid)
+
+            # anti spam: 1 alert per loop
             break
 
         time.sleep(91)
