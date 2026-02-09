@@ -82,7 +82,7 @@ LATE_MAX_OPP_SOT = 1
 LATE_MIN_ODD = 1.6
 
 # Odds filter (1X2)
-ODD_MIN = 1.5
+ODD_MIN = 1.3
 REQUIRE_ODDS = False
 
 # =========================
@@ -677,7 +677,7 @@ while True:
             # anti-rust window
             in_early_risk = EARLY_RISK_START <= minute <= EARLY_RISK_END
             if in_early_risk:
-                if abs(sot_diff) < 4:
+                if abs(sot_diff) < 2:
                     continue
 
             pace10_shots, pace10_sot = pace_last_window(fid, minute, 10, pick_side)
@@ -692,12 +692,11 @@ while True:
             if in_second_half:
                 if pace10_shots < PACE2_MIN_SHOTS_10: continue
                 if pace5_shots < PACE2_MIN_SHOTS_5: continue
-                if pace10_sot < PACE2_MIN_SOT_10: continue
-
-            in_post_goal_strict = GOAL_COOLDOWN_SECONDS <= since_change < POST_GOAL_STRICT_UNTIL_SECONDS
-            if in_post_goal_strict:
-                if abs(sot_diff) < 3: continue
-                if pace5_shots < 4: continue
+                if pace10_sot < PACE2_MIN_SOT_10: 
+                
+        if GOAL_COOLDOWN_SECONDS <= since_change < POST_GOAL_STRICT_UNTIL_SECONDS:
+    if abs(sot_diff) < 2 and pace5_shots < 3:
+        continue
 
             is_late_game = minute >= LATE_MINUTE
             if is_late_game:
@@ -727,7 +726,7 @@ while True:
             )
 
             if in_early_risk:
-                if not (abs(sot_diff) >= 4 and pace10_shots >= 10 and conf >= 90):
+                if not (abs(sot_diff) >= 3 and pace10_shots >= 10 and conf >= 90):
                     continue
 
             pick_team = home if pick_side == "HOME" else away
